@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+
+# Local configuration (copy .env.example -> .env to override defaults)
+.env
+
+# Evaluation raw results (Markdown reports are committed)
+eval-results/*.json
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
