@@ -7,9 +7,20 @@
 
 | Pole | Wartość |
 |---|---|
-| Status | Projekt zatwierdzony do implementacji (v1.0) |
+| Status | Zaimplementowany (v1.0, 2026-10-13); odstępstwa poniżej |
 | Data | 2026-10-13 |
 | Stos | Python 3.13 · FastAPI · Pydantic AI V2 · Ollama 0.40.x · Mailpit 1.31.x · Docker Compose |
+
+> **Stan implementacji (2026-10-13).** System jest zaimplementowany. Źródłem prawdy o konfiguracji są
+> pliki repozytorium (`docker-compose.yml`, `api/`). Konfiguracje referencyjne w §18 opisują projekt
+> pierwotny. Najważniejsze odstępstwa wykryte podczas implementacji i testów na prawdziwym modelu:
+>
+> - porty hosta: API **8080** (zamiast 8000), Ollama **11435** (zamiast 11434),
+> - schemat parametru `department` wymuszony jako płaski `enum` zamiast `UseEnumMemberDocstrings`
+>   (Ollama usuwa `$ref` i `const` ze schematu narzędzia),
+> - profil modelu z `max_tokens` zamiast `max_completion_tokens` (Ollama ignoruje ten drugi), `LLM_MAX_TOKENS=256`,
+> - z instrukcji usunięto regułę „never call `send_email` more than once”, bo powodowała pętlę wywołań u modelu 4B,
+> - Pydantic AI 2.55 (nowsza niż zakładana 2.14), `UsageLimits` bez `tool_calls_limit`.
 
 ## Spis treści
 
