@@ -59,6 +59,7 @@ flowchart LR
 | `api` | `python:3.13-slim` (build z `api/Dockerfile`) | Endpoint HTTP, agent AI, Swagger | http://localhost:8080 |
 | `ollama` | `ollama/ollama:0.40.3` | Lokalny silnik LLM (CPU; GPU opcjonalnie) | http://localhost:11435 (debug) |
 | `ollama-init` | `ollama/ollama:0.40.3` | Jednorazowo pobiera model, jeśli go nie ma | — |
+| `api-ready` | obraz `api` | Bramka startowa: kończy się, gdy API jest gotowe, więc `docker compose up -d` wraca dopiero wtedy | — |
 | `mailpit` | `axllent/mailpit:v1.31.5` | Przechwytuje e-maile, panel WWW, REST API | http://localhost:8025 |
 
 Porty są publikowane tylko na `127.0.0.1`. API na hoście ma port **8080**, a nie 8000: 8000 bywa zajęty
@@ -67,7 +68,7 @@ lokalnie (11434). Porty można zmienić w `.env` (patrz [Konfiguracja](#konfigur
 
 ## Wymagania
 
-- Docker ≥ 24 i Docker Compose ≥ 2.24 (`docker compose version`)
+- Docker Engine ≥ 25 i Docker Compose ≥ 2.24 (`docker version`, `docker compose version`)
 - ≥ 8 GB RAM dostępnej dla Dockera (model zajmuje ok. 4 GB); na Docker Desktop zwiększ limit w ustawieniach
 - ≥ 15 GB wolnego dysku: obraz Ollamy ok. 9 GB (zawiera biblioteki GPU), model ok. 2,5 GB
 - Internet przy **pierwszym** uruchomieniu (kolejne działają offline)
@@ -81,19 +82,23 @@ cd ai-router
 docker compose up -d
 ```
 
-To wszystko. Pierwsze uruchomienie pobiera obrazy i model (ok. 2,5 GB). Polecenie **czeka**, aż model
-będzie na dysku, i dopiero wtedy uruchamia API. Postęp pobierania podejrzysz w drugim terminalu:
+To wszystko. Pierwsze uruchomienie pobiera obrazy i model (ok. 2,5 GB, zwykle kilka minut). Polecenie
+**czeka**, aż model będzie na dysku, a API przejdzie healthcheck gotowości (pilnuje tego jednorazowa
+usługa `api-ready`). **Gdy polecenie się zakończy, API przyjmuje zapytania.** Postęp pobierania podejrzysz
+w drugim terminalu:
 
 ```bash
 docker compose logs -f ollama-init
 ```
 
-Gdy polecenie się zakończy, API jest gotowe. Opcjonalnie możesz poczekać na pełną gotowość wszystkich
-zależności:
+Po restarcie lub w skryptach możesz dodatkowo poczekać na gotowość:
 
 ```bash
 ./scripts/wait-ready.sh          # lub: make wait
 ```
+
+Pierwsze zapytanie po starcie trwa dłużej (ok. 30 s na CPU), bo model ładuje się do pamięci i nie ma
+jeszcze zbuforowanego promptu. Kolejne zajmują ok. 9 s.
 
 | Co | Adres |
 |---|---|
@@ -251,6 +256,7 @@ Z niego generowane są instrukcje agenta, schemat narzędzia i opis w Swaggerze.
 | D10 | **Jawny fallback do `other@`** | Zgłoszenie nie ginie przy awarii LLM i jest wyraźnie oznaczone. |
 | D11 | **`uv` + `uv.lock`** | Szybkie, powtarzalne buildy; obraz bazowy to wciąż oficjalny `python`. |
 | D12 | **Funkcjonalny podział działów** | Ta sama decyzja niezależnie od języka zgłoszenia. |
+| D13 | **Bramka startowa `api-ready`** | Compose czeka na warunek zależności przed startem usługi zależnej. Jednorazowy kontener zależny od `api: service_healthy` sprawia, że `docker compose up -d` wraca dopiero przy gotowym API (bez tego API startowało 1–3 s po powrocie polecenia). |
 
 Wnioski z testów na prawdziwym modelu:
 

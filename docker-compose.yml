@@ -87,10 +87,23 @@ services:
         - python
         - -c
         - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=5).status == 200 else 1)"
-      interval: 10s
+      interval: 15s
       timeout: 7s
-      retries: 6
-      start_period: 20s
+      retries: 4
+      start_period: 60s
+      start_interval: 1s # frequent checks while starting -> readiness detected within ~1 s
+
+  # --- Startup gate: `docker compose up -d` returns only once the API is READY ---
+  # Compose waits for a dependency's condition before starting a dependent, so this one-shot
+  # container makes `up -d` block until the API healthcheck (/api/v1/health/ready) passes.
+  api-ready:
+    image: ai-router-api:local # reuses the image built for `api` (no extra download)
+    pull_policy: never
+    restart: "no"
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["python", "-c", "print('AI Message Router is ready - Swagger: /api/v1/docs')"]
 
   # --- Developer container: tests, lint, evaluation (not started by `up -d`) ---
   api-dev:

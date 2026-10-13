@@ -20,7 +20,9 @@
 >   (Ollama usuwa `$ref` i `const` ze schematu narzędzia),
 > - profil modelu z `max_tokens` zamiast `max_completion_tokens` (Ollama ignoruje ten drugi), `LLM_MAX_TOKENS=256`,
 > - z instrukcji usunięto regułę „never call `send_email` more than once”, bo powodowała pętlę wywołań u modelu 4B,
-> - Pydantic AI 2.55 (nowsza niż zakładana 2.14), `UsageLimits` bez `tool_calls_limit`.
+> - Pydantic AI 2.55 (nowsza niż zakładana 2.14), `UsageLimits` bez `tool_calls_limit`,
+> - bramka startowa `api-ready` (zależna od `api: service_healthy`), dzięki której `docker compose up -d`
+>   wraca dopiero przy gotowym API; uzupełnia §5.4.
 
 ## Spis treści
 
