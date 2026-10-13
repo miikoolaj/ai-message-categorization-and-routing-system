@@ -1,0 +1,11 @@
+# Optional NVIDIA GPU overlay for Ollama (requires the NVIDIA Container Toolkit).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
