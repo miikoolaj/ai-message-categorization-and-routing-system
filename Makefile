@@ -44,7 +44,7 @@ smoke: ## Test dymny w bashu (curl + jq) na działającym środowisku
 	./scripts/smoke-test.sh
 
 eval: ## Ewaluacja trafności routingu na zbiorze wzorcowym (prawdziwy LLM)
-	$(DEV_RUN) python -m tests.eval.run_eval
+	$(DEV_RUN) python -m tests.eval.run_eval $(ARGS)
 
 lint: ## ruff (lint + format check) i mypy
 	$(DEV_RUN_ISOLATED) sh -c "ruff check src tests && ruff format --check src tests && mypy src"
