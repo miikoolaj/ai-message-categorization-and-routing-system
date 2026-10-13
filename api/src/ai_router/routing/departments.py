@@ -62,6 +62,8 @@ DEPARTMENT_POLICIES: Mapping[Department, DepartmentPolicy] = MappingProxyType(
                 "pensja",
                 "pasek płacowy",
                 "umowa",
+                "aneks",
+                "koniec umowy",
                 "zaświadczenie",
                 "nadgodziny",
             ),
@@ -78,7 +80,10 @@ DEPARTMENT_POLICIES: Mapping[Department, DepartmentPolicy] = MappingProxyType(
                 "(sports card, private medical care), performance reviews, career paths, "
                 "workplace conflicts, mobbing or harassment reports, wellbeing, team events"
             ),
-            not_here="administrative and payroll formalities -> kadry",
+            not_here=(
+                "administrative and payroll formalities (leave, salary, employment contracts "
+                "and their annexes or end dates) -> kadry"
+            ),
             keywords_pl=(
                 "rekrutacja",
                 "szkolenie",
