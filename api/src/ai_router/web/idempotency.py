@@ -1,84 +1,76 @@
-"""In-memory idempotency for `POST /api/v1/messages` (header `Idempotency-Key`).
+"""Idempotent execution of `POST /api/v1/messages` (header `Idempotency-Key`).
 
-The same key with the same payload returns the stored response instead of sending a second
-e-mail. The same key with a different payload is rejected. Failed operations are not stored,
-so the client can retry with the same key. State is per process (PoC); production would use Redis.
+The decision is stored in SQLite (survives restarts) and scoped per client, so two clients cannot
+collide on the same key. Concurrent duplicates wait for the first request; a duplicate of a
+request that died (e.g. process restart) takes over after the wait timeout.
 """
 
 import asyncio
 import hashlib
 import json
 import time
-from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ai_router.errors import IdempotencyConflictError
+from ai_router.errors import IdempotencyConflictError, IdempotencyInProgressError
+from ai_router.storage.idempotency import IdempotencyRepository
 
 
-@dataclass(slots=True)
-class _Entry:
-    fingerprint: str
-    expires_at: float
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    result: Any = None
+@dataclass(frozen=True, slots=True)
+class StoredResponse:
+    status_code: int
+    body: Any
+    headers: dict[str, str] = field(default_factory=dict)
 
 
-class IdempotencyStore:
-    def __init__(
-        self,
-        *,
-        ttl_seconds: float,
-        max_entries: int,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._ttl = ttl_seconds
-        self._max_entries = max_entries
-        self._clock = clock
-        self._entries: OrderedDict[str, _Entry] = OrderedDict()
+def fingerprint(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
-    @staticmethod
-    def fingerprint(payload: dict[str, Any]) -> str:
-        canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode()).hexdigest()
 
-    def __len__(self) -> int:
-        return len(self._entries)
+async def run_idempotent(
+    repo: IdempotencyRepository,
+    *,
+    scope_key: str,
+    payload_fingerprint: str,
+    operation: Callable[[], Awaitable[StoredResponse]],
+    wait_timeout: float,
+    stale_after: float | None = None,
+    poll_interval: float = 0.5,
+) -> tuple[StoredResponse, bool]:
+    """Run `operation` at most once per key. Returns `(response, replayed)`.
 
-    async def execute[T](
-        self, key: str, fingerprint: str, operation: Callable[[], Awaitable[T]]
-    ) -> tuple[T, bool]:
-        """Run `operation` once per key. Returns `(result, replayed)`."""
-        self._evict_expired()
-        entry = self._entries.get(key)
-        if entry is None:
-            entry = _Entry(fingerprint=fingerprint, expires_at=self._clock() + self._ttl)
-            self._entries[key] = entry
-            self._evict_overflow()
-        elif entry.fingerprint != fingerprint:
-            raise IdempotencyConflictError(
-                "This Idempotency-Key was already used with a different request body."
+    A duplicate waits up to `wait_timeout` for the original request. An `in_progress` entry older
+    than `stale_after` (default: `wait_timeout`) - longer than any request can legitimately run -
+    belongs to a request that died and is taken over.
+    """
+    stale_threshold = wait_timeout if stale_after is None else stale_after
+    deadline = time.monotonic() + wait_timeout
+    decision = await repo.begin(scope_key, payload_fingerprint)
+    while decision.kind == "in_progress":
+        if time.monotonic() >= deadline:
+            started = decision.started_at or time.time()
+            stale = time.time() - started > stale_threshold
+            if stale and await repo.take_over(scope_key, payload_fingerprint):
+                break
+            raise IdempotencyInProgressError(
+                "A request with this Idempotency-Key is still being processed."
             )
-        self._entries.move_to_end(key)
-
-        async with entry.lock:  # concurrent duplicates wait for the first request
-            if entry.result is not None:
-                return entry.result, True
-            try:
-                result = await operation()
-            except BaseException:
-                if self._entries.get(key) is entry:
-                    del self._entries[key]  # do not remember failures
-                raise
-            entry.result = result
-            return result, False
-
-    def _evict_expired(self) -> None:
-        now = self._clock()
-        for key in [k for k, e in self._entries.items() if e.expires_at <= now]:
-            del self._entries[key]
-
-    def _evict_overflow(self) -> None:
-        while len(self._entries) > self._max_entries:
-            self._entries.popitem(last=False)  # least recently used
+        await asyncio.sleep(poll_interval)
+        decision = await repo.begin(scope_key, payload_fingerprint)
+    if decision.kind == "conflict":
+        raise IdempotencyConflictError(
+            "This Idempotency-Key was already used with a different request body."
+        )
+    if decision.kind == "replay":
+        return StoredResponse(decision.status_code or 200, decision.body, decision.headers), True
+    try:
+        response = await operation()
+    except BaseException:
+        await asyncio.shield(repo.abandon(scope_key))  # failures are not remembered
+        raise
+    await repo.complete(
+        scope_key, status_code=response.status_code, body=response.body, headers=response.headers
+    )
+    return response, False

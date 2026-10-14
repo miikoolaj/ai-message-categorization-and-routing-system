@@ -1,6 +1,8 @@
 """Application errors. Each one carries the HTTP status and RFC 9457 problem type it maps to.
 
 They are raised by the domain/service layer and translated into responses in `web/errors.py`.
+`detail` is shown to API clients, so it must never contain internal details (host names, ports,
+exception text) - those belong in the logs.
 """
 
 from typing import ClassVar
@@ -20,12 +22,29 @@ class AppError(Exception):
         self.retry_after = retry_after if retry_after is not None else self.default_retry_after
 
 
+class AuthenticationError(AppError):
+    status, type_suffix, title = 401, "unauthenticated", "Authentication required"
+
+
+class PermissionDeniedError(AppError):
+    status, type_suffix, title = 403, "forbidden", "Access denied"
+
+
+class TicketNotFoundError(AppError):
+    status, type_suffix, title = 404, "ticket-not-found", "Ticket not found"
+
+
+class IdempotencyInProgressError(AppError):
+    status, type_suffix, title = 409, "idempotency-in-progress", "Request still in progress"
+    default_retry_after = 5
+
+
 class IdempotencyConflictError(AppError):
     status, type_suffix, title = 422, "idempotency-conflict", "Idempotency key reused"
 
 
 class TooManyRequestsError(AppError):
-    status, type_suffix, title = 429, "too-many-requests", "Too many concurrent requests"
+    status, type_suffix, title = 429, "too-many-requests", "Too many requests"
     default_retry_after = 10
 
 
@@ -38,8 +57,13 @@ class LlmUnavailableError(AppError):
     default_retry_after = 30
 
 
-class SmtpUnavailableError(AppError):
-    status, type_suffix, title = 503, "smtp-unavailable", "E-mail server unavailable"
+class LlmMisconfiguredError(AppError):
+    status, type_suffix, title = 503, "llm-misconfigured", "LLM backend misconfigured"
+    default_retry_after = 60
+
+
+class StorageUnavailableError(AppError):
+    status, type_suffix, title = 503, "storage-unavailable", "Message storage unavailable"
     default_retry_after = 30
 
 

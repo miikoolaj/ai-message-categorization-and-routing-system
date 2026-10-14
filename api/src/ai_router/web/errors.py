@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ai_router.errors import AppError
-from ai_router.logging_config import current_request_id
+from ai_router.logging_config import current_request_id, log_event
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +50,8 @@ async def _app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     if not isinstance(exc, AppError):  # pragma: no cover - registration guarantees the type
         raise exc
     headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
-    log = logger.warning if exc.status < 500 else logger.error
-    log("http.app_error", extra={"status": exc.status, "error_type": exc.type_suffix})
+    level = logging.WARNING if exc.status < 500 else logging.ERROR
+    log_event(logger, level, "http.app_error", status=exc.status, error_type=exc.type_suffix)
     return problem_response(
         status=exc.status,
         type_suffix=exc.type_suffix,

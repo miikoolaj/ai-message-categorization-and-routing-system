@@ -10,13 +10,14 @@ from fastapi import HTTPException
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from ai_router.logging_config import request_id_var
+from ai_router.logging_config import log_event, request_id_var
+from ai_router.observability import metrics
 from ai_router.web.errors import problem_response
 
 logger = logging.getLogger(__name__)
 
 REQUEST_ID_HEADER = "X-Request-ID"
-HEALTH_PATH_PREFIX = "/api/v1/health/"
+QUIET_PATH_PREFIXES = ("/api/v1/health/", "/metrics")
 _VALID_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
@@ -72,7 +73,7 @@ class RequestContextMiddleware:
                 return
             await self.app(scope, receive_with_limit, send_with_request_id)
         except Exception:
-            logger.exception("http.unhandled_error", extra={"path": scope["path"]})
+            logger.exception("http.unhandled_error", extra={"fields": {"path": scope["path"]}})
             if not response_started:
                 response = problem_response(
                     status=500,
@@ -82,16 +83,28 @@ class RequestContextMiddleware:
                 )
                 await response(scope, receive, send_with_request_id)
         finally:
-            # Health probes run every few seconds - keep them out of INFO logs.
-            level = logging.DEBUG if scope["path"].startswith(HEALTH_PATH_PREFIX) else logging.INFO
-            logger.log(
-                level,
+            elapsed = time.perf_counter() - started
+            route = _route_template(scope, status_code)
+            metrics.HTTP_REQUESTS.labels(scope["method"], route, str(status_code)).inc()
+            metrics.HTTP_DURATION.labels(route).observe(elapsed)
+            # Health probes and scrapes run every few seconds - keep them out of INFO logs.
+            quiet = scope["path"].startswith(QUIET_PATH_PREFIXES)
+            log_event(
+                logger,
+                logging.DEBUG if quiet else logging.INFO,
                 "http.request",
-                extra={
-                    "method": scope["method"],
-                    "path": scope["path"],
-                    "status": status_code,
-                    "duration_ms": int((time.perf_counter() - started) * 1000),
-                },
+                method=scope["method"],
+                path=scope["path"],
+                status=status_code,
+                duration_ms=int(elapsed * 1000),
             )
             request_id_var.reset(token)
+
+
+def _route_template(scope: Scope, status_code: int) -> str:
+    """Low-cardinality route label: the path template (`/api/v1/messages/{ticket_id}`)."""
+    route = scope.get("route")
+    path = getattr(route, "path", None)
+    if isinstance(path, str):
+        return path
+    return "unmatched" if status_code == 404 else "other"

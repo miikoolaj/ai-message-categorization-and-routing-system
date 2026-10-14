@@ -49,19 +49,19 @@ class ScriptedModel:
     def remaining_steps(self) -> int:
         return len(self._steps)
 
-    def retry_prompts(self) -> list[RetryPromptPart]:
-        """Retry prompts the agent sent back to the model (validation errors, ModelRetry)."""
-        last = self.requests[-1] if self.requests else []
+    def retry_texts(self, request_index: int) -> list[str]:
+        """Contents of retry prompts the agent sent in the given model request."""
         return [
-            part
-            for message in last
+            str(part.content)
+            for message in self.requests[request_index]
             if isinstance(message, ModelRequest)
             for part in message.parts
             if isinstance(part, RetryPromptPart)
         ]
 
     def tool_schema(self, name: str = "send_email") -> dict[str, Any]:
-        for tool in self.infos[0].function_tools:
+        info = self.infos[0]
+        for tool in [*info.function_tools, *info.output_tools]:
             if tool.name == name:
                 return tool.parameters_json_schema
         raise AssertionError(f"tool {name!r} was not offered to the model")
@@ -71,15 +71,24 @@ def tool_call(
     department: str = "help-desk@example.com",
     subject: str = "Komputer nie działa",
     reason: str = "Awaria sprzętu jednego użytkownika",
+    confidence: float | str = 0.9,
 ) -> ModelResponse:
-    args = {"reason": reason, "department": department, "subject": subject}
+    args = {
+        "reason": reason,
+        "department": department,
+        "confidence": confidence,
+        "subject": subject,
+    }
     return ModelResponse(parts=[ToolCallPart("send_email", args)])
 
 
 def parallel_tool_calls(*departments: str) -> ModelResponse:
     return ModelResponse(
         parts=[
-            ToolCallPart("send_email", {"reason": "Test", "department": d, "subject": "Test"})
+            ToolCallPart(
+                "send_email",
+                {"reason": "Test", "department": d, "confidence": 0.9, "subject": "Test"},
+            )
             for d in departments
         ]
     )

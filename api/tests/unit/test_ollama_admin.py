@@ -3,7 +3,12 @@ import json
 import httpx
 import pytest
 
-from ai_router.llm.ollama_admin import OllamaAdminClient
+from ai_router.llm.ollama_admin import (
+    OllamaAdminClient,
+    is_loaded,
+    keep_alive_value,
+    keeps_model_loaded,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -46,4 +51,48 @@ async def test_warm_up_sends_empty_generate_request_with_keep_alive() -> None:
         return httpx.Response(200, json={"done": True, "done_reason": "load"})
 
     await client_with(handler).warm_up("qwen3", "24h")
-    assert bodies == [{"model": "qwen3", "keep_alive": "24h", "stream": False}]
+    await client_with(handler).warm_up("qwen3", "-1")
+    assert bodies == [
+        {"model": "qwen3", "keep_alive": "24h", "stream": False},
+        {"model": "qwen3", "keep_alive": -1, "stream": False},  # a JSON number, not "-1"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("-1", -1), ("300", 300), ("0.5", 0.5), ("30m", "30m"), ("1h30m", "1h30m")],
+)
+def test_keep_alive_value(value: str, expected: object) -> None:
+    assert keep_alive_value(value) == expected
+
+
+async def test_capabilities() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        name = json.loads(request.content)["model"]
+        if name == "missing":
+            return httpx.Response(404, json={})
+        return httpx.Response(200, json={"capabilities": ["completion", "tools"]})
+
+    admin = client_with(handler)
+    assert await admin.capabilities("qwen3") == {"completion", "tools"}
+    assert await admin.capabilities("missing") is None
+
+
+async def test_loaded_models() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/ps"
+        return httpx.Response(200, json={"models": [{"name": "qwen3:4b", "model": "qwen3:4b"}]})
+
+    assert await client_with(handler).loaded_models() == {"qwen3:4b"}
+    assert (
+        await client_with(lambda r: httpx.Response(200, json={"models": []})).loaded_models()
+        == set()
+    )
+
+
+def test_keep_alive_semantics() -> None:
+    assert keeps_model_loaded("-1") and keeps_model_loaded(" -1m ")
+    assert not keeps_model_loaded("30m") and not keeps_model_loaded("0")
+    assert is_loaded("qwen3:4b", {"qwen3:4b"})
+    assert is_loaded("llama3", {"llama3:latest"})
+    assert not is_loaded("qwen3:4b", {"qwen3:8b"})

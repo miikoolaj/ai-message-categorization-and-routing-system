@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Protocol
 
 import aiosmtplib
 
+from ai_router.logging_config import log_event
+
 if TYPE_CHECKING:
     from ai_router.config import Settings
 
@@ -91,23 +93,30 @@ class SmtpEmailSender:
             except aiosmtplib.SMTPException as exc:  # permanent (e.g. recipients refused)
                 raise self._failure(message, exc) from exc
             else:
-                logger.info(
-                    "email.sent",
-                    extra={"message_id": message["Message-ID"], "to": message["To"]},
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "smtp.sent",
+                    message_id=message["Message-ID"],
+                    to=message["To"],
                 )
                 return
 
     async def _before_retry(self, message: EmailMessage, attempt: int, exc: Exception) -> None:
         delay = self._retry_delays[attempt - 1]
-        logger.warning(
-            "email.retry",
-            extra={"message_id": message["Message-ID"], "attempt": attempt, "error": repr(exc)},
+        log_event(
+            logger,
+            logging.WARNING,
+            "smtp.retry",
+            message_id=message["Message-ID"],
+            attempt=attempt,
+            error=repr(exc),
         )
         await asyncio.sleep(delay)
 
     def _failure(self, message: EmailMessage, exc: Exception) -> EmailDeliveryError:
-        logger.error(
-            "email.failed", extra={"message_id": message["Message-ID"], "error": repr(exc)}
+        log_event(
+            logger, logging.ERROR, "smtp.failed", message_id=message["Message-ID"], error=repr(exc)
         )
         return EmailDeliveryError(f"SMTP delivery to {self._host}:{self._port} failed: {exc!r}")
 

@@ -1,0 +1,104 @@
+# Routing policy - the single source of truth about departments.
+#
+# Everything the agent knows about departments comes from this file: the instructions, the enum of
+# allowed addresses in the `send_email` tool schema, the OpenAPI description and the tests.
+# To customise without rebuilding the image: copy this file to ./config/routing-policy.yaml, set
+# ROUTING_POLICY_FILE=/config/routing-policy.yaml in .env and run `docker compose up -d`.
+#
+# Rules:
+#   - exactly one department has `fallback: true` (unclear / unrelated messages),
+#   - `examples` are few-shot examples shown to the model; keep them DISJOINT from the evaluation
+#     dataset (api/tests/eval/dataset.yaml) - the evaluation script checks this,
+#   - every e-mail address mentioned in `decision_rules` must be one of the departments.
+version: "2026-10-13.3"
+
+departments:
+  - key: human_resources
+    address: human-resources@example.com
+    name: HR / People & Culture
+    name_pl: HR
+    scope: >-
+      recruitment and job offers, onboarding, training and development, benefits (sports card,
+      private medical care), performance reviews, career paths, workplace conflicts, mobbing or
+      harassment reports, wellbeing, team events
+    not_here: >-
+      administrative and payroll formalities (leave of any kind including parental leave, salary
+      and its components, payslips, employment contracts and their annexes or end dates, changes of
+      personal data) -> kadry; offers from suppliers or business partners, office facilities and
+      private matters -> other
+    keywords_pl: [rekrutacja, szkolenie, benefit, karta sportowa, awans, konflikt, mobbing, onboarding]
+    examples:
+      - "Czy firma dofinansowuje kursy językowe dla pracowników?"
+      - "Koleżanka z zespołu publicznie mnie obraża, co mogę zrobić?"
+
+  - key: help_desk
+    address: help-desk@example.com
+    name: First-line IT support (single user)
+    name_pl: Help desk
+    scope: >-
+      a problem of ONE person: my computer, laptop, monitor, printer or phone does not work, cannot
+      log in, password reset, locked account, e-mail/Outlook/Teams/Office issues, installing
+      software on my computer, requests for equipment or accessories
+    not_here: outages affecting many users, security incidents, access rights to systems -> it
+    keywords_pl: [komputer, laptop, drukarka, hasło, nie mogę się zalogować, Outlook, mysz, monitor]
+    examples:
+      - "Klawiatura w moim laptopie przestała reagować"
+      - "Wyskakuje mi błąd przy logowaniu do poczty"
+
+  - key: it
+    address: it@example.com
+    name: IT department (infrastructure and systems)
+    name_pl: Dział IT
+    scope: >-
+      outages affecting many people or services (servers, network, office Wi-Fi, VPN for
+      everyone), security incidents (phishing, malware, data leak), access rights to systems and
+      databases, new systems and integrations, licences, IT projects
+    not_here: an individual user's problem with their own device -> help-desk
+    keywords_pl: [serwer, sieć, awaria systemu, baza danych, phishing, wirus, uprawnienia, VPN, wdrożenie]
+    examples:
+      - "Od rana cała sieć firmowa działa bardzo wolno u wszystkich"
+      - "Ktoś podszywa się pod prezesa i rozsyła maile z linkiem do przelewu"
+
+  - key: kadry
+    address: kadry@example.com
+    name: Personnel administration & payroll
+    name_pl: Kadry i płace
+    scope: >-
+      leave requests and absences of any kind (annual, on-demand, parental, maternity, sick leave),
+      working time and overtime, salary, payslips and payroll, PIT-11, employment contracts and
+      annexes, employment certificates, changes of personal data (surname, address, bank account)
+    not_here: recruitment, training, benefits, workplace conflicts -> human-resources
+    keywords_pl: [urlop, L4, zwolnienie lekarskie, wypłata, pensja, pasek płacowy, umowa, aneks, koniec umowy, zaświadczenie, nadgodziny]
+    examples:
+      - "Proszę o trzy dni urlopu wypoczynkowego od poniedziałku"
+      - "Nie dostałem jeszcze przelewu z pensją za wrzesień"
+
+  - key: other
+    address: other@example.com
+    name: Other / fallback
+    name_pl: Pozostałe
+    fallback: true
+    scope: >-
+      unclear, empty, nonsense or spam messages, topics unrelated to the departments above (office
+      administration and building facilities such as air conditioning or cleaning, offers from
+      suppliers or business partners, parking, catering, sales, legal) and messages whose
+      department cannot be determined with reasonable confidence
+    not_here: anything that clearly matches one of the departments above
+    keywords_pl: []
+    examples:
+      - "Kto zamawia kwiaty do recepcji?"
+      - "zxcvb qwert"
+
+# Department-specific disambiguation rules (generic rules are part of the prompt template).
+decision_rules:
+  - >-
+    A problem with ONE person's device, account or software -> help-desk@example.com.
+    Outages affecting many people or a whole system, security incidents and access to systems
+    -> it@example.com.
+  - >-
+    Formal / administrative / payroll matters -> kadry@example.com. Recruitment, development,
+    benefits, wellbeing and workplace relations -> human-resources@example.com.
+  - >-
+    human-resources@example.com is not a catch-all for everything about people: choose it only for
+    the topics in its scope. Benefits are employee benefits provided by the company (sports card,
+    medical care), not prices or private purchases.

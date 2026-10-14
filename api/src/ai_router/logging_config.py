@@ -32,7 +32,24 @@ class RequestIdFilter(logging.Filter):
 
 
 def _event_fields(record: logging.LogRecord) -> dict[str, object]:
-    return {k: v for k, v in record.__dict__.items() if k not in _STANDARD_ATTRS}
+    fields = {
+        k: v for k, v in record.__dict__.items() if k not in _STANDARD_ATTRS and k != "fields"
+    }
+    nested = getattr(record, "fields", None)
+    if isinstance(nested, dict):
+        fields.update(nested)
+    return fields
+
+
+def log_event(logger: logging.Logger, level: int, event: str, /, **fields: object) -> None:
+    """Log a structured event.
+
+    Fields travel in a single `extra={"fields": {...}}` entry, so any field name is allowed -
+    with plain `extra=` a key such as `message`, `name` or `args` collides with `LogRecord`
+    attributes and raises an exception inside the logging call.
+    """
+    if logger.isEnabledFor(level):
+        logger.log(level, event, extra={"fields": fields})
 
 
 class JsonFormatter(logging.Formatter):

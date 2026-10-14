@@ -4,10 +4,13 @@ import pytest
 from pydantic_ai import models
 
 from ai_router.config import Settings
-from ai_router.llm.model import build_model
-from ai_router.mail.sender import InMemoryEmailSender
+from ai_router.llm.model import build_ollama_model
+from ai_router.mail.composer import MailSettings
+from ai_router.mail.gateway import InMemoryMailGateway
 from ai_router.routing.agent import build_agent
-from ai_router.routing.service import RoutingService
+from ai_router.routing.deps import AgentRuntime
+from ai_router.routing.policy import load_policy
+from ai_router.routing.service import RoutingRequest, RoutingService
 
 pytestmark = [pytest.mark.llm, pytest.mark.anyio]
 
@@ -18,24 +21,40 @@ CASES = [
 ]
 
 
-@pytest.fixture
-def service(monkeypatch: pytest.MonkeyPatch) -> tuple[RoutingService, InMemoryEmailSender]:
-    monkeypatch.setattr(models, "ALLOW_MODEL_REQUESTS", True)
-    settings = Settings(routing_fallback_enabled=False)  # an agent failure must fail the test
-    mailer = InMemoryEmailSender()
-    agent = build_agent(settings, build_model(settings))
-    svc = RoutingService(agent=agent, mailer=mailer, settings=settings, model_name="live")
-    return svc, mailer
-
-
 @pytest.mark.parametrize(("message", "expected"), CASES)
 async def test_real_model_routes_clear_cases(
-    service: tuple[RoutingService, InMemoryEmailSender], message: str, expected: str
+    message: str, expected: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    svc, mailer = service
-    outcome = await svc.route(
-        sender_email="llm-test@example.com", message=message, request_id="llm"
+    monkeypatch.setattr(models, "ALLOW_MODEL_REQUESTS", True)
+    settings = Settings(routing_fallback_enabled=False)  # an agent failure must fail the test
+    policy = load_policy(settings.routing_policy_file)
+    handle = build_ollama_model(settings)
+    routing_agent = build_agent(settings, handle.model, policy)
+    gateway = InMemoryMailGateway()
+    runtime = AgentRuntime(
+        policy=policy,
+        mail_settings=MailSettings.from_settings(settings),
+        model_name=handle.name,
+        prompt_version=routing_agent.prompt_version,
+        confidence_threshold=settings.confidence_threshold,
+        low_confidence_action=settings.low_confidence_action,
     )
+    service = RoutingService(
+        routing_agent=routing_agent, gateway=gateway, runtime=runtime, settings=settings
+    )
+    try:
+        outcome = await service.route(
+            RoutingRequest(
+                ticket_id="f" * 32,
+                ticket_code="AIR-LLMTEST0",
+                request_id="llm",
+                sender_email="llm-test@example.com",
+                sender_verification="none",
+                message=message,
+            )
+        )
+    finally:
+        await handle.close()
     assert outcome.sent.routed_by == "agent"
-    assert outcome.sent.department.value == expected, outcome.sent.reason
-    assert len(mailer.sent) == 1
+    assert outcome.sent.department == expected, outcome.sent.reason
+    assert len(gateway.messages) == 1

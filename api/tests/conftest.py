@@ -14,13 +14,18 @@ from pydantic_ai import models
 
 from ai_router.config import Settings
 from ai_router.container import AppContainer, build_container
-from ai_router.mail.sender import EmailSender, InMemoryEmailSender
+from ai_router.mail.gateway import MailGateway
+from ai_router.mail.sender import InMemoryEmailSender
 from ai_router.main import create_app
+from ai_router.routing.policy import RoutingPolicy, load_policy
+from ai_router.web.security import KeyResolver
 from tests.helpers.fakes import FakeOllamaAdmin
 from tests.helpers.scripted_model import ScriptedModel, Step
 
 # Unit tests must never reach a real LLM (integration tests re-enable it explicitly).
 models.ALLOW_MODEL_REQUESTS = False
+
+POLICY: RoutingPolicy = load_policy()
 
 
 @pytest.fixture
@@ -35,6 +40,14 @@ def make_settings(**overrides: Any) -> Settings:
         "smtp_host": "127.0.0.1",
         "smtp_port": 1,
         "log_format": "console",
+        "database_path": ":memory:",
+        "rate_limit_per_minute": 0,
+        "public_base_url": "http://test",
+        "static_dir": "/nonexistent",
+        "mail_sync_delivery_timeout_seconds": 2.0,
+        "auth_mode": "none",
+        "llm_backend": "ollama",
+        "routing_policy_file": None,
     }
     return Settings(**{**defaults, **overrides})
 
@@ -66,7 +79,7 @@ class ApiHarness:
     client: httpx.AsyncClient
     app: FastAPI
     model: ScriptedModel
-    mailer: InMemoryEmailSender
+    smtp: InMemoryEmailSender
     admin: FakeOllamaAdmin
 
     @property
@@ -80,27 +93,39 @@ ApiFactory = Callable[..., Any]
 
 @pytest.fixture
 def api() -> ApiFactory:
-    """`async with api(*model_steps, **settings_overrides) as h:` - app wired with fakes."""
+    """`async with api(*model_steps, **settings_overrides) as h:` - app wired with fakes.
+
+    The real outbox runs on an in-memory SQLite database and "delivers" to `h.smtp`.
+    """
 
     @asynccontextmanager
     async def factory(
         *steps: Step,
-        mailer: EmailSender | None = None,
+        smtp: InMemoryEmailSender | None = None,
         admin: FakeOllamaAdmin | None = None,
+        gateway: MailGateway | None = None,
+        key_resolver: KeyResolver | None = None,
         **overrides: Any,
     ) -> AsyncIterator[ApiHarness]:
         settings = make_settings(**overrides)
         scripted = ScriptedModel(*steps)
-        sender = mailer if mailer is not None else InMemoryEmailSender()
+        sender = smtp if smtp is not None else InMemoryEmailSender()
         fake_admin = admin or FakeOllamaAdmin()
 
         def container_factory(s: Settings) -> AppContainer:
-            return build_container(s, model=scripted.model, mailer=sender, ollama_admin=fake_admin)
+            return build_container(
+                s,
+                model=scripted.model,
+                smtp_sender=sender,
+                gateway=gateway,
+                ollama_admin=fake_admin,
+                key_resolver=key_resolver,
+            )
 
         app = create_app(settings, container_factory=container_factory)
         async with LifespanManager(app) as manager:
             transport = httpx.ASGITransport(app=manager.app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                yield ApiHarness(client, app, scripted, sender, fake_admin)  # type: ignore[arg-type]
+                yield ApiHarness(client, app, scripted, sender, fake_admin)
 
     return factory

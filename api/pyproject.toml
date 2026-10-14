@@ -1,6 +1,6 @@
 [project]
 name = "ai-router"
-version = "1.0.0"
+version = "1.1.0"
 description = "AI message categorisation and routing PoC: FastAPI + Pydantic AI agent + Ollama + SMTP."
 requires-python = ">=3.13,<3.14"
 dependencies = [
@@ -11,6 +11,14 @@ dependencies = [
     "pydantic-ai-slim[openai]>=2.14,<3",
     "aiosmtplib>=3.0",
     "httpx>=0.28",
+    "aiosqlite>=0.20",
+    "pyyaml>=6.0",
+    "prometheus-client>=0.21",
+    "pyjwt[crypto]>=2.9",
+    "python-multipart>=0.0.18",
+    "opentelemetry-sdk>=1.30",
+    "opentelemetry-exporter-otlp-proto-http>=1.30",
+    "opentelemetry-instrumentation-fastapi>=0.51b0",
 ]
 
 [dependency-groups]
@@ -19,8 +27,8 @@ dev = [
     "pytest-cov>=6.0",
     "anyio>=4.6",
     "asgi-lifespan>=2.1",
-    "pyyaml>=6.0",
     "types-pyyaml>=6.0",
+    "hypothesis>=6.120",
     "ruff>=0.8",
     "mypy>=1.13",
 ]
@@ -50,7 +58,7 @@ plugins = ["pydantic.mypy"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["asgi_lifespan.*"]
+module = ["asgi_lifespan.*", "opentelemetry.instrumentation.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
