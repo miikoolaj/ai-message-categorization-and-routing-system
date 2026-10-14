@@ -22,6 +22,11 @@ if curl -fsS "$API/api/v1/openapi.json" | jq -e '.paths["/api/v1/messages"]' >/d
 else
   fail "OpenAPI describes POST /api/v1/messages"
 fi
+if curl -fsS -o /dev/null "$API/api/v1/static/swagger-ui-bundle.js"; then
+  pass "Swagger UI assets served locally (works offline)"
+else
+  fail "Swagger UI assets served locally"
+fi
 
 check_case() {
   local message="$1" expected="$2"
@@ -31,12 +36,19 @@ check_case() {
   response=$(curl -sS --max-time 200 -X POST "$API/api/v1/messages" \
     -H 'Content-Type: application/json' \
     -d "$(jq -n --arg e "$sender" --arg m "$message" '{email: $e, message: $m}')")
-  local department routed_by request_id
+  local department routed_by request_id ticket_id ticket_code
   department=$(jq -r '.department // empty' <<<"$response")
   routed_by=$(jq -r '.routed_by // empty' <<<"$response")
   request_id=$(jq -r '.request_id // empty' <<<"$response")
+  ticket_id=$(jq -r '.ticket_id // empty' <<<"$response")
+  ticket_code=$(jq -r '.ticket_code // empty' <<<"$response")
   if [[ "$routed_by" == "agent" ]]; then pass "routed by the AI agent (tool call)"; else fail "routed_by=$routed_by: $response"; fi
   if [[ "$department" == "$expected" ]]; then pass "API chose $department"; else fail "API chose '$department' (reason: $(jq -r '.reason // empty' <<<"$response"))"; fi
+  if [[ -n "$ticket_id" ]] && curl -fsS "$API/api/v1/messages/$ticket_id" | jq -e '.status == "routed"' >/dev/null; then
+    pass "ticket $ticket_code is stored (GET /api/v1/messages/{ticket_id})"
+  else
+    fail "ticket $ticket_id not found or not routed"
+  fi
 
   local id="" attempt
   for attempt in $(seq 1 30); do
@@ -46,19 +58,47 @@ check_case() {
   done
   if [[ -z "$id" ]]; then fail "e-mail captured by Mailpit"; return; fi
   pass "e-mail captured by Mailpit (ID $id)"
-  local mail to reply_to header_rid
+  local mail to reply_to header_rid subject
   mail=$(curl -fsS "$MAILPIT/api/v1/message/$id")
   to=$(jq -r '.To[0].Address' <<<"$mail")
   reply_to=$(jq -r '.ReplyTo[0].Address' <<<"$mail")
+  subject=$(jq -r '.Subject' <<<"$mail")
   header_rid=$(curl -fsS "$MAILPIT/api/v1/message/$id/headers" | jq -r 'to_entries[] | select(.key | ascii_downcase == "x-request-id") | .value[0]')
   if [[ "$to" == "$expected" ]]; then pass "To: $to"; else fail "To: $to (expected $expected)"; fi
   if [[ "$reply_to" == "$sender" ]]; then pass "Reply-To: $reply_to"; else fail "Reply-To: $reply_to (expected $sender)"; fi
   if [[ "$header_rid" == "$request_id" ]]; then pass "X-Request-ID matches the API response"; else fail "X-Request-ID: $header_rid != $request_id"; fi
+  if [[ "$subject" == *"[$ticket_code]"* ]]; then pass "Subject carries the ticket code: $subject"; else fail "Subject without [$ticket_code]: $subject"; fi
+}
+
+check_async() {
+  local message="Moja drukarka nie drukuje" expected="help-desk@example.com"
+  local sender="smoke-async-$(date +%s)-$RANDOM@example.com"
+  echo "== async mode (Prefer: respond-async): \"$message\""
+  local headers body status location
+  headers=$(mktemp)
+  body=$(curl -sS --max-time 30 -D "$headers" -X POST "$API/api/v1/messages" \
+    -H 'Content-Type: application/json' -H 'Prefer: respond-async' \
+    -d "$(jq -n --arg e "$sender" --arg m "$message" '{email: $e, message: $m}')")
+  status=$(head -1 "$headers" | awk '{print $2}')
+  location=$(awk 'tolower($1) == "location:" {print $2}' "$headers" | tr -d '\r')
+  rm -f "$headers"
+  if [[ "$status" == "202" && -n "$location" ]]; then pass "202 Accepted, Location: $location"; else fail "expected 202 + Location, got $status: $body"; return; fi
+  local ticket="" attempt
+  for attempt in $(seq 1 120); do
+    ticket=$(curl -fsS "$API$location")
+    [[ "$(jq -r '.status' <<<"$ticket")" =~ ^(routed|failed)$ ]] && break
+    sleep 2
+  done
+  if [[ "$(jq -r '.status' <<<"$ticket")" == "routed" ]]; then pass "ticket processed in the background"; else fail "ticket status: $(jq -c . <<<"$ticket")"; return; fi
+  local department
+  department=$(jq -r '.result.department' <<<"$ticket")
+  if [[ "$department" == "$expected" ]]; then pass "worker routed to $department"; else fail "worker routed to '$department'"; fi
 }
 
 check_case "Nie działa mi komputer" "help-desk@example.com"
 check_case "Chciałbym zgłosić urlop na jutro" "kadry@example.com"
 check_case "Serwer produkcyjny nie odpowiada, nikt w firmie nie może pracować" "it@example.com"
+check_async
 
 echo
 if (( failures == 0 )); then

@@ -1,0 +1,16 @@
+# CI overlay: deterministic rule-based "LLM" (LLM_BACKEND=fake) - no Ollama, no model download.
+# Exercises the whole HTTP -> agent -> tool -> outbox -> SMTP -> Mailpit path in seconds.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d mailpit api api-ready
+services:
+  api:
+    environment:
+      LLM_BACKEND: fake
+    depends_on: !override
+      mailpit:
+        condition: service_healthy
+  api-dev:
+    environment:
+      LLM_BACKEND: fake
+    depends_on: !override
+      mailpit:
+        condition: service_healthy

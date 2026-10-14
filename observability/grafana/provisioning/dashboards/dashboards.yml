@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: ai-router
+    folder: AI Router
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,19 +1,31 @@
 # AI Message Router - complete environment.
-#   docker compose up -d      -> Ollama (+ model download), Mailpit, API
+#   docker compose up -d   -> Ollama (+ model download), Mailpit, API (returns when the API is ready)
 # All variables have defaults; an optional .env file can override them (see .env.example).
+# Overlays: docker-compose.gpu.yml (NVIDIA), docker-compose.observability.yml (Prometheus, Grafana,
+# Jaeger), docker-compose.ci.yml (deterministic fake LLM, no model download).
 name: ai-router
 
-x-ollama-image: &ollama-image ollama/ollama:${OLLAMA_VERSION:-0.40.3}
+# Images are pinned by tag AND digest (reproducible); Renovate keeps the pins up to date.
+# alpine/ollama is the CPU-only build of Ollama: 121 MB instead of 9.4 GB (CUDA/ROCm libraries).
+x-ollama-image: &ollama-image ${OLLAMA_IMAGE:-alpine/ollama:0.40.3@sha256:57d4a1a57372dd53ab1583a8ff5c8844bbc0f1dc60eeaf387b96498aa40db7ec}
 x-model: &model ${OLLAMA_MODEL:-qwen3:4b-instruct-2507-q4_K_M}
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   # --- LLM inference server ----------------------------------------------------
   ollama:
     image: *ollama-image
     restart: unless-stopped
+    logging: *logging
+    cpus: ${OLLAMA_CPUS:-8} # do not take the whole host
+    mem_limit: ${OLLAMA_MEM_LIMIT:-8g} # model ~2.5 GB + KV cache + headroom
     environment:
       OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
-      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1} # keep the model loaded (no cold starts)
       OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
       OLLAMA_MAX_LOADED_MODELS: "1"
       OLLAMA_MAX_QUEUE: "32"
@@ -33,22 +45,26 @@ services:
   ollama-init:
     image: *ollama-image
     restart: "no"
+    logging: *logging
     depends_on:
       ollama:
         condition: service_healthy
     environment:
       OLLAMA_HOST: http://ollama:11434 # the CLI acts as a client of the server above
       OLLAMA_MODEL: *model
+      OLLAMA_MODEL_DIGEST: ${OLLAMA_MODEL_DIGEST:-} # optional: fail if the weights differ
     volumes:
       - ./scripts/ollama-init.sh:/ollama-init.sh:ro
     entrypoint: ["/bin/sh", "/ollama-init.sh"]
 
   # --- E-mail testing tool (SMTP sink + web UI + REST API) ---------------------
   mailpit:
-    image: axllent/mailpit:${MAILPIT_VERSION:-v1.31.5}
+    image: ${MAILPIT_IMAGE:-axllent/mailpit:v1.31.5@sha256:94f6b70c1436defae6799d9ac7ff0eeff9540465b842026d5cdb018f1c0234ea}
     restart: unless-stopped
+    logging: *logging
     environment:
       MP_MAX_MESSAGES: "5000"
+      MP_MAX_AGE: ${MAILPIT_MAX_AGE:-7d} # retention of captured e-mails (personal data)
       MP_SMTP_AUTH_ACCEPT_ANY: "1"
       MP_SMTP_AUTH_ALLOW_INSECURE: "1"
     ports:
@@ -56,22 +72,32 @@ services:
       - "${BIND_ADDRESS:-127.0.0.1}:${MAILPIT_SMTP_PORT:-1025}:1025"
     # healthcheck is built into the image: /mailpit readyz
 
-  # --- Routing API (FastAPI + Pydantic AI agent) -------------------------------
+  # --- Routing API (FastAPI + Pydantic AI agent + outbox + async worker) -------
   api:
     build:
       context: ./api
       target: runtime
     image: ai-router-api:local
     restart: unless-stopped
+    logging: *logging
+    cpus: ${API_CPUS:-1}
+    mem_limit: ${API_MEM_LIMIT:-512m}
     env_file:
       - path: .env
         required: false # .env is optional (Compose >= 2.24)
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_MODEL: *model
-      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192} # mirrors the server (sanity checks)
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080} # links in e-mails (feedback)
+      DATABASE_PATH: /app/data/ai-router.sqlite3
+    volumes:
+      - api_data:/app/data # tickets, outbox, idempotency keys, feedback (SQLite)
+      - ./config:/config:ro # optional routing policy override (ROUTING_POLICY_FILE)
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8080}:8000"
     depends_on:
@@ -100,6 +126,7 @@ services:
     image: ai-router-api:local # reuses the image built for `api` (no extra download)
     pull_policy: never
     restart: "no"
+    logging: *logging
     depends_on:
       api:
         condition: service_healthy
@@ -111,6 +138,9 @@ services:
     build:
       context: ./api
       target: dev
+      args:
+        DEV_UID: ${DEV_UID:-1000}
+        DEV_GID: ${DEV_GID:-1000}
     image: ai-router-api:dev
     env_file:
       - path: .env
@@ -127,6 +157,7 @@ services:
       - ./api/src:/app/src
       - ./api/tests:/app/tests
       - ./eval-results:/app/eval-results
+      - ./config:/config:ro
     depends_on:
       ollama-init:
         condition: service_completed_successfully
@@ -135,3 +166,4 @@ services:
 
 volumes:
   ollama_data:
+  api_data:

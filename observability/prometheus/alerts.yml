@@ -1,0 +1,44 @@
+# Alert rules for the AI Message Router (visible in Prometheus -> Alerts; plug in Alertmanager to notify).
+groups:
+  - name: ai-router
+    rules:
+      - alert: AiRouterFallbackRateHigh
+        expr: |
+          sum(rate(ai_router_fallback_total[15m]))
+            / clamp_min(sum(rate(ai_router_routed_total[15m])), 1e-9) > 0.10
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 10% of messages are routed by the fallback"
+          description: "The AI agent is failing (LLM down, misconfigured model, prompt regression). Check readiness and api logs."
+      - alert: AiRouterSlowRouting
+        expr: histogram_quantile(0.95, sum(rate(ai_router_agent_duration_seconds_bucket[15m])) by (le)) > 30
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 routing time above 30 s"
+      - alert: AiRouterOutboxBacklog
+        expr: ai_router_outbox_pending > 20
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "E-mails are piling up in the outbox (SMTP problem?)"
+      - alert: AiRouterOutboxDeliveryFailed
+        expr: increase(ai_router_outbox_deliveries_total{result="failed"}[1h]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "An e-mail exhausted all delivery attempts"
+      - alert: AiRouterLowConfidenceRateHigh
+        expr: |
+          sum(rate(ai_router_low_confidence_total[1h]))
+            / clamp_min(sum(rate(ai_router_routed_total{routed_by="agent"}[1h])), 1e-9) > 0.30
+        for: 1h
+        labels: { severity: info }
+        annotations:
+          summary: "Over 30% of decisions below the confidence threshold - review the routing policy"
+      - alert: AiRouterDown
+        expr: up{job="ai-router"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "The API does not answer metric scrapes"
