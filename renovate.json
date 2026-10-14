@@ -1,0 +1,30 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "docker:pinDigests", ":semanticCommits"],
+  "lockFileMaintenance": { "enabled": true, "schedule": ["before 6am on monday"] },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Images in Compose files written as ${VAR:-image:tag@sha256:...}",
+      "managerFilePatterns": ["/(^|/)docker-compose[^/]*\\.ya?ml$/"],
+      "matchStrings": [
+        "\\$\\{[A-Z_]+:-(?<depName>[a-z0-9./-]+):(?<currentValue>[^@}]+)@(?<currentDigest>sha256:[a-f0-9]{64})\\}"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchDatasources": ["docker"],
+      "groupName": "container images"
+    },
+    {
+      "matchPackageNames": ["alpine/ollama", "ollama/ollama", "pydantic-ai-slim", "openai"],
+      "groupName": "LLM stack",
+      "automerge": false,
+      "prBodyNotes": [
+        "Agent behaviour may change: check the nightly evaluation (make eval) and the contract tests before merging."
+      ]
+    }
+  ]
+}

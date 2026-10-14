@@ -1,0 +1,26 @@
+# pipx install pre-commit && pre-commit install --hook-type pre-commit --hook-type pre-push
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.0
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: ^api/
+      - id: ruff-format
+        files: ^api/
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+        args: [--unsafe] # Compose files use the !override tag
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: end-of-file-fixer
+  - repo: local
+    hooks:
+      - id: lint-strict
+        name: ruff + mypy --strict (dev container)
+        entry: make lint
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

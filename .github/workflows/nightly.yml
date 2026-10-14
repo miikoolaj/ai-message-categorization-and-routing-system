@@ -1,0 +1,48 @@
+# Nightly: the real model on CPU - LLM tests, E2E and the quality evaluation with thresholds,
+# for the pinned Ollama version and the previous one (compatibility matrix before upgrades).
+name: Nightly (real model)
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        ollama_image: ["alpine/ollama:0.40.3", "alpine/ollama:0.35.1"]
+    env:
+      OLLAMA_IMAGE: ${{ matrix.ollama_image }}
+      OLLAMA_CPUS: "4"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the model from cache (2.5 GB, saves the download)
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: ollama-models.tgz
+          key: model-qwen3-4b-instruct-2507-q4_K_M-v1
+      - name: Import cached model
+        if: steps.model-cache.outputs.cache-hit == 'true'
+        run: scripts/model-import.sh ollama-models.tgz
+      - name: Start the stack (returns when the API is ready)
+        run: docker compose up -d
+      - name: Export the model for the cache
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: scripts/model-export.sh ollama-models.tgz
+      - run: make test-llm
+      - run: make e2e
+      - name: Evaluation with quality gates
+        run: make eval ARGS="--min-accuracy 0.9 --min-tool-compliance 0.98 --max-duplicate-rate 0.05"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-${{ strategy.job-index }}
+          path: eval-results/

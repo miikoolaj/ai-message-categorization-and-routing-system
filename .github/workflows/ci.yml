@@ -1,0 +1,60 @@
+# Every push / PR: fast, deterministic checks - no model download.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    name: Lint, types, unit/API/contract tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.0"
+          python-version: "3.13"
+      - run: uv sync --frozen
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run mypy src
+      - run: uv run pytest --cov --cov-report=term --cov-fail-under=90
+
+  e2e-fake-llm:
+    name: End-to-end (rule-based fake LLM)
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start Mailpit + API with LLM_BACKEND=fake
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build mailpit api api-ready
+      - name: E2E tests (HTTP -> agent -> tool -> outbox -> SMTP -> Mailpit)
+        run: |
+          DEV_UID=$(id -u) DEV_GID=$(id -g) docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+            --profile dev run --rm --build api-dev pytest -m e2e -v
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs api mailpit
+
+  image-scan:
+    name: Image vulnerability scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose build api
+      - name: Fail on fixable CRITICAL vulnerabilities
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.75.0 image \
+            --exit-code 1 --severity CRITICAL --ignore-unfixed ai-router-api:local
