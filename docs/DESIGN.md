@@ -7,7 +7,7 @@
 
 | Pole | Wartość |
 |---|---|
-| Status | Zaimplementowany (v1.0, 2026-10-13); odstępstwa poniżej |
+| Status | Zaimplementowany (v1.0), rozbudowany w fazie 2 (v1.1, 2026-10-13); odstępstwa poniżej |
 | Data | 2026-10-13 |
 | Stos | Python 3.13 · FastAPI · Pydantic AI V2 · Ollama 0.40.x · Mailpit 1.31.x · Docker Compose |
 
@@ -23,6 +23,12 @@
 > - Pydantic AI 2.55 (nowsza niż zakładana 2.14), `UsageLimits` bez `tool_calls_limit`,
 > - bramka startowa `api-ready` (zależna od `api: service_healthy`), dzięki której `docker compose up -d`
 >   wraca dopiero przy gotowym API; uzupełnia §5.4.
+>
+> **Faza 2 (v1.1).** System dostał trwały zapis zgłoszeń i
+> transactional outbox (SQLite), tryb asynchroniczny, uwierzytelnianie (klucz API / OIDC) z weryfikacją
+> nadawcy, limity zapytań, politykę działów w YAML, próg pewności, informację zwrotną od działów, metryki,
+> alerty i tracing oraz CI. Architekturę po zmianach opisuje [§4.5](#45-architektura-po-fazie-2-stan-obecny),
+> a §18 odsyła do plików zamiast powielać ich treść.
 
 ## Spis treści
 
@@ -43,7 +49,7 @@
 15. [Konfiguracja](#15-konfiguracja)
 16. [Strategia testów i ewaluacja LLM](#16-strategia-testów-i-ewaluacja-llm)
 17. [Struktura repozytorium](#17-struktura-repozytorium)
-18. [Konfiguracje referencyjne (Compose, Dockerfile)](#18-konfiguracje-referencyjne)
+18. [Konfiguracje referencyjne (odnośniki do plików)](#18-konfiguracje-referencyjne)
 19. [Ryzyka i ograniczenia PoC](#19-ryzyka-i-ograniczenia-poc)
 20. [Możliwe rozszerzenia](#20-możliwe-rozszerzenia)
 21. [Słowniczek](#21-słowniczek)
@@ -247,6 +253,82 @@ sequenceDiagram
 
 Kluczowa zasada: **o wyniku decyduje rzeczywisty efekt uboczny narzędzia zapisany w `deps`**, a nie to,
 co model „twierdzi”, że zrobił. Tekst końcowy modelu jest tylko logowany.
+
+### 4.5. Architektura po fazie 2 (stan obecny)
+
+Opisy 4.1–4.4 pokazują projekt pierwotny. Faza 2 zachowała kontrakt agenta i ścieżkę główną, ale
+dodała trwałość, tryb asynchroniczny, bezpieczeństwo i obserwowalność.
+
+```mermaid
+flowchart TB
+    subgraph http["Warstwa HTTP"]
+        sec["security.py<br/>AUTH_MODE none / api_key / oidc<br/>limit zapytań (token bucket)"]
+        routers["routers: messages (sync / async),<br/>feedback, health, /metrics"]
+        idem["idempotencja (trwała, per klient)"]
+    end
+    subgraph app["Warstwa aplikacji"]
+        tickets["TicketService<br/>(zgłoszenia, numery AIR-…, linki HMAC)"]
+        worker["AsyncRoutingWorker<br/>(Prefer: respond-async)"]
+        svc["RoutingService<br/>(semafor, timeout, klasyfikacja błędów,<br/>fallback, metryki)"]
+    end
+    subgraph agent["Warstwa agenta"]
+        ag["Agent Pydantic AI<br/>tryb tool lub output_function"]
+        pol["RoutingPolicy (policy.yaml)<br/>→ instrukcje, enum, wersja promptu"]
+    end
+    subgraph infra["Warstwa infrastruktury"]
+        gw["MailGateway → OutboxGateway"]
+        disp["OutboxDispatcher<br/>(ponowienia z backoffem)"]
+        smtp["SmtpEmailSender"]
+        db[("SQLite: tickets, outbox,<br/>idempotency, feedback")]
+        llm["Ollama (OpenAI-compatible)<br/>albo model regułowy (LLM_BACKEND=fake)"]
+        obs["Prometheus metrics + OpenTelemetry"]
+    end
+    sec --> routers --> idem --> tickets
+    tickets --> svc
+    tickets --> worker --> svc
+    svc --> ag --> pol
+    ag -- "send_email" --> gw --> db
+    disp --> db
+    disp --> smtp
+    ag --> llm
+    svc -.-> obs
+```
+
+**Najważniejsze zmiany względem 4.1–4.4**
+
+| Obszar | Projekt pierwotny | Stan po fazie 2 |
+|---|---|---|
+| Źródło prawdy o wysyłce | `deps.sent` ustawiane po odpowiedzi SMTP | Rekord w outboxie, zapisany transakcyjnie przez narzędzie; serwis po timeoucie czeka na zapis (`asyncio.shield`) i odczytuje go z bramki, więc nie ma podwójnej dostawy |
+| Awaria SMTP | 503, klient musi ponowić | `email.delivery: "queued"`, dyspozytor ponawia (12 prób, backoff z jitterem), alerty |
+| Tryby | tylko synchroniczny | synchroniczny (DoD) + `Prefer: respond-async` → `202` + `Location`, worker w procesie |
+| Stan | w pamięci procesu | SQLite w wolumenie `api_data` (WAL, `BEGIN IMMEDIATE`), odzyskiwanie po restarcie, retencja |
+| Polityka działów | kod (`departments.py`) | dane (`policy.yaml`), walidacja przy starcie, nadpisanie przez `ROUTING_POLICY_FILE` |
+| Wynik agenta | dział, temat, uzasadnienie | + `confidence`, próg `CONFIDENCE_THRESHOLD`, oznaczenie `[Do weryfikacji]`, opcjonalne przekierowanie do fallbacku |
+| Klienci | anonimowi | klucz API (skróty SHA-256) albo OIDC (JWKS), nadawca z tokenu, baner weryfikacji w mailu, limit zapytań per klient |
+| Obserwowalność | logi JSON | + `/metrics` (18 metryk), 6 alertów, dashboard Grafany, ślady OTLP (Jaeger) |
+| Model | `ollama/ollama` (9,4 GB) | `alpine/ollama` (121 MB, CPU), KEEP_ALIVE `-1`, rozgrzewka wypełniająca KV cache, strażnik modelu |
+| Testy | unit/API, E2E na prawdziwym modelu | + kontraktowe (format przewodu), właściwości (Hypothesis), E2E na fałszywym LLM, CI, ewaluacja 158 przypadków z progami |
+
+**Cykl życia zgłoszenia**
+
+```mermaid
+stateDiagram-v2
+    [*] --> processing: POST (sync)
+    [*] --> queued: POST + Prefer respond-async
+    queued --> processing: worker pobiera zgłoszenie
+    processing --> routed: mail w outboxie (agent albo fallback)
+    processing --> failed: błąd bez fallbacku
+    processing --> queued: restart API (tylko async)
+    processing --> failed: restart API (sync - klient stracił połączenie)
+    routed --> [*]: retencja (30 dni)
+    failed --> [*]: retencja (30 dni)
+```
+
+Niezależnie od statusu zgłoszenia mail w outboxie przechodzi przez stany `pending` → `sending` →
+`sent` (albo `failed` po wyczerpaniu prób; `python -m ai_router.admin retry-failed` przywraca go do
+kolejki).
+
+Procedury operacyjne (alerty, kopie zapasowe, RODO, aktualizacje): [RUNBOOK.md](RUNBOOK.md).
 
 ---
 
@@ -1355,241 +1437,57 @@ Skrypt `scripts/smoke-test.sh` (bash + curl + jq, uruchamiany na działającym s
 
 ## 18. Konfiguracje referencyjne
 
-### 18.1. `docker-compose.yml`
+Pierwsza wersja tego dokumentu zawierała tu pełne szkice `docker-compose.yml`, skryptu init, nakładki
+GPU i Dockerfile. Po implementacji i fazie 2 kopie rozjechały się z plikami, więc zastępują je
+odnośniki. **Źródłem prawdy są pliki w repozytorium:**
 
-```yaml
-name: ai-router
-
-x-ollama-image: &ollama-image ollama/ollama:${OLLAMA_VERSION:-0.40.3}
-x-model: &model ${OLLAMA_MODEL:-qwen3:4b-instruct-2507-q4_K_M}
-
-services:
-  ollama:
-    image: *ollama-image
-    restart: unless-stopped
-    environment:
-      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
-      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
-      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
-      OLLAMA_MAX_LOADED_MODELS: "1"
-      OLLAMA_MAX_QUEUE: "32"
-    volumes:
-      - ollama_data:/root/.ollama
-    ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${OLLAMA_PORT:-11434}:11434"
-    healthcheck:
-      test: ["CMD", "ollama", "list"]     # obraz nie zawiera curl
-      interval: 5s
-      timeout: 5s
-      retries: 30
-      start_period: 10s
-
-  ollama-init:
-    image: *ollama-image
-    restart: "no"
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      OLLAMA_HOST: http://ollama:11434     # CLI działa jako klient zdalnego serwera
-      OLLAMA_MODEL: *model
-    volumes:
-      - ./scripts/ollama-init.sh:/ollama-init.sh:ro
-    entrypoint: ["/bin/sh", "/ollama-init.sh"]
-
-  mailpit:
-    image: axllent/mailpit:${MAILPIT_VERSION:-v1.31.5}
-    restart: unless-stopped
-    environment:
-      MP_MAX_MESSAGES: "5000"
-      MP_SMTP_AUTH_ACCEPT_ANY: "1"
-      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
-    ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${MAILPIT_UI_PORT:-8025}:8025"
-      - "${BIND_ADDRESS:-127.0.0.1}:${MAILPIT_SMTP_PORT:-1025}:1025"
-    # healthcheck wbudowany w obraz: /mailpit readyz
-
-  api:
-    build:
-      context: ./api
-      target: runtime
-    image: ai-router-api:local
-    restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false                     # .env jest opcjonalny (Compose >= 2.24)
-    environment:
-      OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL: *model
-      SMTP_HOST: mailpit
-      SMTP_PORT: "1025"
-    ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"
-    depends_on:
-      ollama:
-        condition: service_healthy
-      ollama-init:
-        condition: service_completed_successfully
-      mailpit:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=5).status == 200 else 1)"]
-      interval: 10s
-      timeout: 7s
-      retries: 6
-      start_period: 20s
-
-  api-dev:                                   # testy i ewaluacja w kontenerze; nie startuje przy `up -d`
-    profiles: ["dev"]
-    build:
-      context: ./api
-      target: dev
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL: *model
-      SMTP_HOST: mailpit
-      SMTP_PORT: "1025"
-      API_BASE_URL: http://api:8000
-      MAILPIT_BASE_URL: http://mailpit:8025
-    volumes:
-      - ./eval-results:/app/eval-results
-    depends_on:
-      ollama-init:
-        condition: service_completed_successfully
-      mailpit:
-        condition: service_healthy
-    command: ["pytest", "-q", "tests/unit", "tests/api"]
-
-volumes:
-  ollama_data:
-```
-
-Uwagi:
-
-- Kotwice YAML (`x-ollama-image`, `x-model`) eliminują duplikację wersji i nazwy modelu (jedno źródło prawdy).
-- Zmienna `OLLAMA_MODEL` musi być identyczna dla `ollama-init` i `api` — kotwica to gwarantuje.
-- `scripts/*.sh` muszą mieć końce linii LF (`.gitattributes`: `*.sh text eol=lf`) — inaczej `/bin/sh` w kontenerze
-  zawiedzie po klonowaniu na Windows.
-
-### 18.2. `scripts/ollama-init.sh`
-
-```sh
-#!/bin/sh
-# Idempotentne przygotowanie modelu: offline-friendly przy kolejnych startach.
-set -eu
-MODEL="${OLLAMA_MODEL:?OLLAMA_MODEL is required}"
-
-if ollama show "$MODEL" >/dev/null 2>&1; then
-  echo "[ollama-init] Model '$MODEL' already present - skipping download."
-  exit 0
-fi
-
-attempt=1
-while [ "$attempt" -le 3 ]; do
-  echo "[ollama-init] Pulling '$MODEL' (attempt $attempt/3)..."
-  if ollama pull "$MODEL"; then
-    break
-  fi
-  attempt=$((attempt + 1))
-  sleep $((attempt * 5))
-done
-
-if ! ollama show "$MODEL" >/dev/null 2>&1; then
-  echo "[ollama-init] ERROR: model '$MODEL' is not available after download attempts." >&2
-  exit 1
-fi
-echo "[ollama-init] Model '$MODEL' is ready."
-```
-
-### 18.3. `docker-compose.gpu.yml` (NVIDIA)
-
-```yaml
-services:
-  ollama:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-```
-
-Uruchomienie: `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d`.
-
-### 18.4. `api/Dockerfile` (szkic)
-
-```dockerfile
-# syntax=docker/dockerfile:1
-FROM python:3.13-slim AS base
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
-    UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
-# Wersję uv przypiąć do aktualnej w chwili implementacji (nie używać :latest)
-COPY --from=ghcr.io/astral-sh/uv:<UV_VERSION> /uv /uvx /bin/
-WORKDIR /app
-
-FROM base AS deps
-COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
-
-FROM deps AS build
-COPY src ./src
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-editable
-
-FROM python:3.13-slim AS runtime
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH="/app/.venv/bin:$PATH"
-RUN groupadd --system app && useradd --system --gid app --home-dir /app app
-WORKDIR /app
-COPY --from=build --chown=app:app /app/.venv /app/.venv
-USER app
-EXPOSE 8000
-CMD ["uvicorn", "ai_router.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
-
-FROM build AS dev
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen
-ENV PATH="/app/.venv/bin:$PATH"
-COPY tests ./tests
-CMD ["pytest", "-q"]
-```
-
-Venv zbudowany na `python:3.13-slim` można skopiować do innego etapu z tym samym obrazem bazowym
-(ta sama ścieżka interpretera `/usr/local/bin/python3.13`).
-
----
+| Plik | Co zawiera | Najważniejsze decyzje |
+|---|---|---|
+| [docker-compose.yml](../docker-compose.yml) | Ollama, `ollama-init`, Mailpit, API, bramka `api-ready`, kontener deweloperski (profil `dev`) | Obrazy przypięte tagiem i digestem; `alpine/ollama` dla CPU; limity CPU/RAM; rotacja logów (`x-logging`); porty tylko na `BIND_ADDRESS` (domyślnie 127.0.0.1); wolumeny `ollama_data` i `api_data`; healthchecki z `start_interval` |
+| [docker-compose.gpu.yml](../docker-compose.gpu.yml) | Nakładka NVIDIA | Pełny obraz `ollama/ollama` z bibliotekami CUDA + rezerwacja GPU |
+| [docker-compose.observability.yml](../docker-compose.observability.yml) | Prometheus, Grafana, Jaeger | Provisioning dashboardu i źródła danych; API eksportuje ślady przez OTLP HTTP |
+| [docker-compose.ci.yml](../docker-compose.ci.yml) | Fałszywy LLM dla CI | `LLM_BACKEND=fake`, `depends_on: !override` usuwa zależność od Ollamy |
+| [scripts/ollama-init.sh](../scripts/ollama-init.sh) | Jednorazowe pobranie modelu | Idempotentny, offline przy obecnym modelu, ponowienia, opcjonalna weryfikacja `OLLAMA_MODEL_DIGEST` |
+| [api/Dockerfile](../api/Dockerfile) | Obraz API (runtime) i deweloperski (dev) | Multi-stage z `uv`; zasoby Swagger UI/ReDoc pobierane przez `ADD --checksum` (dokumentacja działa offline); runtime bez `pip`, użytkownik nie-root, `VOLUME /app/data`; dev z UID/GID hosta |
+| [api/src/ai_router/routing/policy.yaml](../api/src/ai_router/routing/policy.yaml) | Polityka działów | Jedno źródło dla instrukcji, enuma, OpenAPI i testów |
+| [observability/](../observability/) | Reguły alertów, konfiguracja Prometheusa i Grafany | 6 alertów (fallbacki, czas, outbox, pewność, dostępność) |
+| [.github/workflows/](../.github/workflows/) | CI i nocna ewaluacja | Lint, testy z pokryciem ≥ 90%, E2E na fałszywym LLM, Trivy; nocą ewaluacja z progami dla dwóch wersji Ollamy |
+| [.env.example](../.env.example) | Wszystkie zmienne z opisami | Plik `.env` jest opcjonalny |
 
 ## 19. Ryzyka i ograniczenia PoC
 
-| Ryzyko / ograniczenie | Wpływ | Mitygacja / komentarz |
-|---|---|---|
-| Mały model myli działy w przypadkach niejednoznacznych | Średni | Jawna polityka (sekcja 8), few-shot, ewaluacja, możliwość zmiany modelu jedną zmienną |
-| Opóźnienie na CPU (5–20 s) | Średni | Rozgrzewka, KV cache prefiksu, wariant instruct, GPU opcjonalnie, tryb async jako rozszerzenie |
-| Pierwsze uruchomienie: pobieranie obrazów (kilka GB, obraz Ollamy zawiera biblioteki GPU) i modelu (~2,5 GB) | Niski | Komunikat w README, `docker compose logs -f ollama-init`; kolejne starty offline |
-| Zmiany zachowania Ollamy między wersjami (parsowanie tool calls) | Średni | Przypięte wersje obrazów i tagu modelu; E2E + ewaluacja przed aktualizacją |
-| `docker compose up -d --wait` bywa zawodne z kontenerami jednorazowymi | Niski | Nie jest wymagane; `scripts/wait-ready.sh` |
-| Stan w pamięci procesu (semafor, idempotencja) | Niski | Akceptowalne w PoC; Redis w rozszerzeniach |
-| Brak uwierzytelniania i rate limitingu per klient | Średni (poza localhost) | Porty tylko na `127.0.0.1`; rozszerzenia w sekcji 20 |
-| Swagger UI ładuje zasoby z CDN | Niski | Wymaga internetu w przeglądarce; self-hosting jako rozszerzenie |
-| Resztkowe ryzyko prompt injection (zła, ale dozwolona klasyfikacja) | Niski | Ograniczony zasięg skutków dzięki enumowi i danym z `deps` |
-| Mailpit bez wolumenu — restart czyści skrzynkę | Brak (zamierzone) | Dodanie wolumenu i `MP_DATABASE`, jeśli potrzebna trwałość |
+Kolumna „Stan po fazie 2” pokazuje, co zmieniła rozbudowa.
+
+| Ryzyko / ograniczenie | Wpływ | Mitygacja pierwotna | Stan po fazie 2 |
+|---|---|---|---|
+| Mały model myli działy w przypadkach niejednoznacznych | Średni | Jawna polityka (sekcja 8), few-shot, ewaluacja, zmiana modelu jedną zmienną | + `confidence` i próg z oznaczeniem `[Do weryfikacji]`, informacja zwrotna od działów → zbiór ewaluacyjny, ewaluacja 158 przypadków z progami w CI |
+| Opóźnienie na CPU | Średni | Rozgrzewka, KV cache prefiksu, wariant instruct, GPU opcjonalnie | + rozgrzewka wypełniająca KV cache, strażnik modelu, tryb async, `AGENT_MODE=output_function`; nadal ok. 12 s na zgłoszenie na CPU |
+| Pierwsze uruchomienie: pobieranie obrazów i modelu | Niski | Komunikat w README, logi `ollama-init` | `alpine/ollama` 121 MB zamiast 9,4 GB; eksport/import modelu do instalacji offline |
+| Zmiany zachowania Ollamy między wersjami | Średni | Przypięte wersje, E2E + ewaluacja przed aktualizacją | + test kontraktowy formatu przewodu, nocna macierz dwóch wersji Ollamy, Renovate |
+| `docker compose up -d --wait` z kontenerami jednorazowymi | Niski | `scripts/wait-ready.sh` | Bramka `api-ready` |
+| Stan w pamięci procesu | Niski | Akceptowalne w PoC | SQLite (zgłoszenia, outbox, idempotencja); limit zapytań nadal w pamięci (jedna instancja) |
+| Brak uwierzytelniania i limitów per klient | Średni (poza localhost) | Porty tylko na 127.0.0.1 | `AUTH_MODE` api_key / oidc, nadawca z tokenu, token bucket per klient |
+| Swagger UI z CDN | Niski | Wymaga internetu | Zasoby wbudowane w obraz (sumy kontrolne), CDN tylko jako zapas |
+| Resztkowe ryzyko prompt injection | Niski | Enum i dane z `deps` | + 10 prób ataku w ewaluacji, reguła DATA w instrukcjach, baner weryfikacji nadawcy |
+| Utrata maila przy awarii SMTP | Średni | Ponowienia w kliencie SMTP, 503 | Transactional outbox z ponowieniami i alertami |
+| Mailpit bez wolumenu | Brak (zamierzone) | — | Bez zmian; retencja `MP_MAX_AGE` 7 dni |
 
 ---
 
 ## 20. Możliwe rozszerzenia
 
-1. **Tryb asynchroniczny**: `202 Accepted`, kolejka (Redis + arq), worker, `GET /api/v1/messages/{id}`, webhook zwrotny.
-2. **Routing do wielu działów**: parametr `departments: list[Department]` lub wielokrotne wywołanie narzędzia z deduplikacją.
-3. **Pewność i human-in-the-loop**: parametr `confidence` w narzędziu; poniżej progu → `other` z flagą „do weryfikacji”.
-4. **Trwałość**: PostgreSQL z historią zgłoszeń, decyzji i metryk; panel przeglądu błędnych decyzji.
-5. **Uwierzytelnianie**: klucz API w nagłówku (`X-API-Key`), rate limiting per klient (np. `slowapi`).
-6. **Tracing**: Arize Phoenix lub Logfire przez OpenTelemetry (profil Compose `observability`).
-7. **MCP**: wystawienie narzędzia `send_email` jako serwera MCP — nauka standardu Model Context Protocol.
-8. **RAG**: baza wiedzy działów (regulaminy, FAQ) jako kontekst decyzji dla trudnych przypadków.
-9. **Wariant PHP** (Symfony AI / Neuron AI) dla porównania ekosystemów przy tym samym kontrakcie API.
-10. **Offline Swagger UI**: serwowanie zasobów Swagger UI lokalnie.
-11. **Optymalizacja agenta**: wariant B (funkcja wyjściowa) lub C (`agent.iter()`), porównane w ewaluacji pod kątem trafności i czasu.
+Zrealizowane w fazie 2: **tryb asynchroniczny** (worker w procesie zamiast Redis + arq), **pewność i
+oznaczanie do weryfikacji**, **trwałość** (SQLite zamiast PostgreSQL, wystarczająca dla jednej
+instancji), **uwierzytelnianie i limity**, **tracing** (OpenTelemetry → Jaeger), **offline Swagger
+UI**, **wariant B agenta** (`AGENT_MODE=output_function`), **pętla informacji zwrotnej**. Pozostają:
+
+1. **Routing do wielu działów**: parametr `departments: list[...]` lub wielokrotne wywołanie narzędzia z deduplikacją.
+2. **Skalowanie poziome**: PostgreSQL (zgłoszenia, outbox), Redis (limity, kolejka), wiele replik API i instancji Ollamy.
+3. **Panel przeglądu** decyzji `[Do weryfikacji]` i korekt działów (dziś: eksport YAML i metryki).
+4. **MCP**: wystawienie narzędzia `send_email` jako serwera MCP — nauka standardu Model Context Protocol.
+5. **RAG**: baza wiedzy działów (regulaminy, FAQ) jako kontekst decyzji dla trudnych przypadków.
+6. **Wariant PHP** (Symfony AI / Neuron AI) dla porównania ekosystemów przy tym samym kontrakcie API.
+7. **Webhook zwrotny** dla trybu asynchronicznego (dziś klient odpytuje `GET /api/v1/messages/{id}`).
 
 ---
 
