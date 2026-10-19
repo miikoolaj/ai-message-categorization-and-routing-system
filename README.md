@@ -6,7 +6,7 @@ treść, wybiera właściwy dział i **sam wysyła e-mail, wywołując narzędzi
 Wiadomość trafia do przechwytującego serwera pocztowego **Mailpit** z nagłówkiem `Reply-To` ustawionym na
 adres nadawcy.
 
-Projekt zaczynał jako PoC; druga faza dodała to, czego potrzeba do pracy z prawdziwymi zgłoszeniami:
+Druga faza dodała to, czego potrzeba do pracy z prawdziwymi zgłoszeniami:
 trwały zapis zgłoszeń i outbox (żaden mail nie ginie przy awarii SMTP), tryb asynchroniczny,
 uwierzytelnianie klientów, informację zwrotną od działów, metryki z alertami i śledzenie (tracing).
 
