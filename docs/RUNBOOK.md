@@ -1,9 +1,9 @@
 # Runbook — utrzymanie AI Message Router
 
-Dokument dla osoby, która utrzymuje działające środowisko: co sprawdzać, jak reagować na alerty, jak
-aktualizować model i obrazy, jak robić kopie zapasowe i obsłużyć wniosek o usunięcie danych.
-Polecenia uruchamiaj w katalogu repozytorium. Jeśli używasz nakładki obserwowalności, dodaj
-`-f docker-compose.yml -f docker-compose.observability.yml` (albo korzystaj z `make`).
+Procedury operacyjne: diagnostyka, reakcja na alerty, aktualizacje modelu i obrazów, kopie zapasowe
+oraz obsługa wniosków o usunięcie danych. Polecenia uruchamia się w katalogu repozytorium; przy
+nakładce obserwowalności trzeba dodać `-f docker-compose.yml -f docker-compose.observability.yml`
+(cele `make` robią to same).
 
 ## 1. Mapa systemu
 
@@ -123,6 +123,15 @@ albo zmienił się model. Przejrzyj korekty działów (`GET /api/v1/feedback/exp
 `[Do weryfikacji]`, uzupełnij `scope` / `examples` w polityce i sprawdź zmianę przez `make eval`.
 
 ## 4. Typowe awarie
+
+### Instalacja i pierwsze uruchomienie
+
+| Objaw | Przyczyna i rozwiązanie |
+|---|---|
+| `docker compose up -d` długo czeka przy pierwszym uruchomieniu | Pobieranie modelu (ok. 2,5 GB); postęp: `docker compose logs -f ollama-init` |
+| `port is already allocated` | Port zajęty przez inną usługę; zmiana w `.env`, np. `API_PORT=8090` |
+| `/bin/sh^M: not found` w `ollama-init` (Windows) | Końce linii CRLF w skryptach; `git config core.autocrlf false` i ponowne sklonowanie |
+| Readiness zwraca 503 | `curl -s localhost:8080/api/v1/health/ready \| jq` wskazuje niedziałającą zależność |
 
 ### Ollama nie działa lub jest zabijana
 

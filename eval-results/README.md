@@ -4,7 +4,7 @@ Generowane przez `make eval` (skrypt `api/tests/eval/run_eval.py`, zbiór `api/t
 Raporty Markdown są w repozytorium, surowe wyniki JSON są ignorowane przez git. Nagłówek każdego
 raportu podaje model, tryb agenta, wersję promptu (`prompt_version`) i wersję polityki działów.
 
-## Faza 2: zbiór 158 przypadków (52 holdout)
+## Zbiór 158 przypadków (52 holdout)
 
 | Plik | Przebieg | Trafność (95% CI) | Holdout |
 |---|---|---|---|
@@ -17,7 +17,7 @@ raportu podaje model, tryb agenta, wersję promptu (`prompt_version`) i wersję 
 Od iteracji 2 raport ukrywa szczegóły błędów na holdout (`--reveal-holdout` je pokazuje), żeby nie
 stroić promptu pod przypadki kontrolne.
 
-## Faza 1: zbiór 58 przypadków
+## Wcześniejszy zbiór: 58 przypadków
 
 | Plik | Przebieg | Wynik |
 |---|---|---|
@@ -25,4 +25,4 @@ stroić promptu pod przypadki kontrolne.
 | `qwen3_4b-instruct-2507-q4_K_M-20261013T110644.md` | Iteracja 1: po dwóch ogólnych poprawkach, zbiór strojeniowy (48) | 100% |
 | `qwen3_4b-instruct-2507-q4_K_M-20261013T110852.md` | Kontrola przeuczenia: zbiór `holdout` (10), uruchomiony raz | 100% |
 
-Wyniki fazy 1 są zawyżone: 10 z 58 przypadków pokrywało się z przykładami z promptu.
+Wyniki na tym zbiorze są zawyżone: 10 z 58 przypadków pokrywało się z przykładami z promptu.
