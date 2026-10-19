@@ -62,7 +62,7 @@ Wymagania: Docker Engine ≥ 25 z Compose ≥ 2.24, ok. 8 GB RAM i 5 GB miejsca 
 Pierwsze uruchomienie pobiera model (ok. 2,5 GB); kolejne działają offline.
 
 ```bash
-git clone https://github.com/miikoolaj/systemem-AI-kategoryzacji-i-routingu-wiadomo-ci.git ai-router
+git clone https://github.com/miikoolaj/ai-message-categorization-and-routing-system.git ai-router
 cd ai-router
 docker compose up -d
 ```
