@@ -7,7 +7,7 @@ error. Writes raw results (JSON) and a Markdown report to `eval-results/`.
 Usage (inside the dev container, e.g. `make eval`):
     python -m tests.eval.run_eval [--exclude-tags holdout] [--tags pl] [--limit 10]
         [--min-accuracy 0.9 --min-tool-compliance 0.98 --max-duplicate-rate 0.05]
-Exit code 1 when a quality gate fails (used by the nightly CI job).
+Exit code 1 when a quality gate fails (used by the model-eval CI workflow).
 """
 
 import argparse

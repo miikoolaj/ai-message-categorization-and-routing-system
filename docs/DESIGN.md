@@ -358,7 +358,8 @@ Ollamie. Każdą z nich pilnuje test kontraktowy formatu zapytań (§12):
 - Klient OpenAI ponawia zapytania domyślnie dwa razy; ponowienie identycznego zapytania przy
   `temperature=0` zwykle niczego nie zmienia, więc `max_retries=1`.
 
-Obraz Ollamy jest przypięty, a nocny workflow ewaluacji sprawdza wersję przypiętą i poprzednią, bo
+Obraz Ollamy jest przypięty, a workflow ewaluacji (`model-eval.yml`, uruchamiany ręcznie przed
+aktualizacją) sprawdza wersję przypiętą i poprzednią, bo
 parsowanie wywołań narzędzi zależy od wersji silnika i szablonu czatu modelu.
 
 ## 8. Niezawodność
@@ -505,7 +506,7 @@ Ewaluacja (`api/tests/eval/run_eval.py`):
 - Raport: trafność z 95% przedziałem Wilsona, trafność per dział i tag, macierz pomyłek, odsetek
   obsłużonych przez narzędzie, duplikaty, kalibracja pewności, długość i język tematów, p50/p95.
 - Progi jakości z kodem wyjścia 1 (`--min-accuracy`, `--min-tool-compliance`, `--max-duplicate-rate`)
-  dla nocnego workflow i aktualizacji modelu.
+  dla workflow ewaluacji i aktualizacji modelu.
 - Szczegóły błędów na holdout są ukryte (`--reveal-holdout` je pokazuje), aby nie stroić promptu pod
   przypadki kontrolne.
 

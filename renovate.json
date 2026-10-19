@@ -23,7 +23,7 @@
       "groupName": "LLM stack",
       "automerge": false,
       "prBodyNotes": [
-        "Agent behaviour may change: check the nightly evaluation (make eval) and the contract tests before merging."
+        "Agent behaviour may change: run the Model evaluation workflow (or make eval) and the contract tests before merging."
       ]
     }
   ]

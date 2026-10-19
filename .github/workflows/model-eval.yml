@@ -1,10 +1,9 @@
-# Nightly: the real model on CPU - LLM tests, E2E and the quality evaluation with thresholds,
-# for the pinned Ollama version and the previous one (compatibility matrix before upgrades).
-name: Nightly (real model)
+# On demand (Actions -> Model evaluation -> Run workflow): the real model on CPU - LLM tests, E2E and
+# the quality evaluation with thresholds, for the pinned Ollama version and the previous one
+# (compatibility matrix before model or Ollama upgrades).
+name: Model evaluation (real model)
 
 on:
-  schedule:
-    - cron: "0 2 * * *"
   workflow_dispatch:
 
 permissions:

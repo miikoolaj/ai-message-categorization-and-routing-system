@@ -188,8 +188,8 @@ fallback).
    `docker compose up -d`.
 4. Zapisz digest wag (`ollama list`) w `OLLAMA_MODEL_DIGEST`.
 
-Nocna ewaluacja w CI sprawdza przypiętą i poprzednią wersję Ollamy, więc regresja po aktualizacji
-obrazu wychodzi przed wdrożeniem.
+Workflow *Model evaluation* (GitHub Actions → Run workflow) sprawdza przypiętą i poprzednią wersję
+Ollamy, więc regresja po aktualizacji obrazu wychodzi przed wdrożeniem.
 
 ### Zmiana polityki działów
 
@@ -204,7 +204,7 @@ obrazu wychodzi przed wdrożeniem.
 ### Aktualizacja obrazów i zależności
 
 Renovate otwiera PR-y z nowymi digestami obrazów i wersjami pakietów. Przed scaleniem: zielone CI (lint,
-testy, E2E na fałszywym LLM, skan Trivy), a dla zmian Ollamy lub modelu także nocna ewaluacja. Ręcznie:
+testy, E2E na fałszywym LLM, skan Trivy), a dla zmian Ollamy lub modelu także workflow *Model evaluation*. Ręcznie:
 `make scan`.
 
 ### Klucze API i sekrety
