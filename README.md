@@ -16,6 +16,12 @@ nadawcy, więc dział odpowiada bezpośrednio zgłaszającemu.
 - 223 testy automatyczne i ewaluacja jakości na 158 opisanych przypadkach: trafność 98,1%
   (95% CI 94,6–99,4%).
 
+Podstawowy przepływ to endpoint `POST /api/v1/messages`, agent z narzędziem `send_email`, wysyłka do
+Mailpit z `Reply-To` i Swagger pod `/api/v1/docs`; jego kod jest w `api/src/ai_router/routing/`
+(polityka, prompt, agent), `mail/` i `web/`. Trwały zapis zgłoszeń, tryb asynchroniczny,
+uwierzytelnianie, obserwowalność i ewaluacja to rozszerzenia ponad ten przepływ. Konfiguracja domyślna
+nie wymaga ich ustawiania: uwierzytelnianie jest wyłączone, a stos obserwowalności to osobna nakładka.
+
 ## Architektura
 
 ```mermaid
@@ -157,6 +163,34 @@ Gwarancje wynikające z tego układu:
   Każdy mail zawiera podpisany link „Zły dział?”, a zebrane korekty eksportują się jako nowe przypadki
   do zbioru ewaluacyjnego.
 
+## Decyzje architektoniczne
+
+- **Python 3.13 i FastAPI.** OpenAPI i Swagger powstają z modeli Pydantic, a asynchroniczne I/O pasuje
+  do długich wywołań modelu i SMTP.
+- **Pydantic AI zamiast LangChain.** Typowane zależności wstrzykiwane do narzędzia, walidacja argumentów
+  z automatycznym odesłaniem błędu do modelu, walidator wyjścia wymuszający wywołanie narzędzia i
+  `FunctionModel` do testów bez LLM, przy mniejszej liczbie warstw abstrakcji niż w LangChain.
+- **Mail powstaje wyłącznie w narzędziu agenta.** `@agent.tool send_email` z walidatorem wyjścia;
+  klasyfikacja przez structured output i wysyłka w kodzie aplikacji nie spełniałaby założenia, że
+  agent sam używa narzędzia.
+- **Dział jako płaski enum w schemacie narzędzia, `Reply-To` z kodu.** Model wybiera tylko spośród
+  dozwolonych adresów, a nadawcę i treść wstawia kod z requestu, więc halucynacja ani prompt injection
+  nie zmieni adresata ani `Reply-To`. Schemat jest płaski, bo parser narzędzi Ollamy gubi `$ref` i
+  `const`.
+- **`qwen3:4b-instruct-2507-q4_K_M` na `alpine/ollama`.** Tool calling i dobry polski przy 2,5 GB;
+  wariant bez trybu „thinking” daje przewidywalny czas odpowiedzi na CPU. `alpine/ollama` ma na CPU tę
+  samą wydajność co `ollama/ollama` przy 121 MB zamiast 9,4 GB; pełny obraz jest w nakładce GPU.
+- **Mailpit zamiast MailHog.** MailHog nie jest rozwijany od 2020 r.; Mailpit ma healthcheck, REST API
+  używane w testach i te same porty.
+- **Init-kontener `ollama-init` i bramka `api-ready`.** `docker compose up -d` kończy się dopiero przy
+  pobranym modelu i gotowym API, a kolejne uruchomienia działają offline.
+- **Transakcyjny outbox w SQLite i fallback do `other@example.com`.** Awaria SMTP ani modelu nie gubi
+  zgłoszenia; ponowienia wysyłki odbywają się bez udziału modelu i bez dodatkowych usług.
+- **Polityka działów w YAML.** Jedno źródło dla promptu, enuma, Swaggera i testów; zmiana działów nie
+  wymaga zmian w kodzie.
+
+Pełna lista z rozważanymi alternatywami: [docs/DESIGN.md](docs/DESIGN.md#2-decyzje-projektowe).
+
 ## Wyniki
 
 Ewaluacja `make eval` na 158 przypadkach (polski, angielski, niemiecki, ukraiński, przypadki
@@ -196,7 +230,8 @@ Testy działają w kontenerze deweloperskim; na hoście nie jest potrzebny Pytho
 | `make scan` | Skan obrazu Trivy |
 
 CI (GitHub Actions) uruchamia lint, testy z progiem pokrycia 90%, E2E na modelu regułowym i skan
-Trivy. Osobny workflow uruchamia ewaluację na prawdziwym modelu z progami jakości.
+Trivy. Osobny workflow, uruchamiany ręcznie, przeprowadza ewaluację na prawdziwym modelu z progami
+jakości.
 
 ## Konfiguracja
 
